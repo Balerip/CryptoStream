@@ -4,23 +4,18 @@ import threading
 import time
 from kafka import KafkaProducer
 
-# ------------------------
 # Kafka setup
-# ------------------------
 producer = KafkaProducer(
-    bootstrap_servers="localhost:9092",
+    bootstrap_servers="kafka:9092",  # Docker network
     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
     key_serializer=lambda k: k.encode('utf-8')
 )
 
 TOPIC = "crypto_ticks"
-
-# ------------------------
-# WebSocket setup
-# ------------------------
 WS_URL = "wss://ws-feed.exchange.coinbase.com"
-TIME_LIMIT = 30  # seconds to run the demo
+TIME_LIMIT = 300  # 5 minutes (increase from 30s)
 ws = None
+
 
 def on_message(ws, message):
     data = json.loads(message)
@@ -29,7 +24,6 @@ def on_message(ws, message):
     if msg_type == "subscriptions":
         print("📡 Subscription confirmed")
     elif msg_type == "ticker":
-        # Build event
         event = {
             "product_id": data.get("product_id"),
             "price": float(data.get("price", 0)),
@@ -38,41 +32,31 @@ def on_message(ws, message):
             "volume_24h": float(data.get("volume_24h", 0)),
             "event_time": data.get("time")
         }
-
-        # Send to Kafka
-        producer.send(
-            topic=TOPIC,
-            key=event["product_id"],
-            value=event
-        )
-
-        # Optional: print to console
-        print(f" Sent to Kafka: {event['product_id']} @ {event['price']}")
-
+        producer.send(topic=TOPIC, key=event["product_id"], value=event)
+        print(f"✅ Sent to Kafka: {event['product_id']} @ {event['price']}")
     elif msg_type == "error":
-        print(" Error from Coinbase:", data)
+        print("❌ Error from Coinbase:", data)
+
 
 def on_open(ws):
-    print(" WebSocket connected")
-
+    print("🔗 WebSocket connected")
     subscribe_msg = {
         "type": "subscribe",
         "channels": [
-            {
-                "name": "ticker",
-                "product_ids": ["BTC-USD", "ETH-USD"]
-            }
+            {"name": "ticker", "product_ids": ["BTC-USD", "ETH-USD"]}
         ]
     }
-
     ws.send(json.dumps(subscribe_msg))
     print("📡 Subscribe payload sent")
+
 
 def on_error(ws, error):
     print("❌ WebSocket error:", error)
 
-def on_close(ws):
-    print("❌ WebSocket closed")
+
+def on_close(ws, close_status_code, close_msg):
+    print("🔌 WebSocket closed")
+
 
 def start_ws():
     global ws
@@ -85,10 +69,9 @@ def start_ws():
     )
     ws.run_forever(ping_interval=20, ping_timeout=10)
 
-# ------------------------
-# Run WebSocket in a thread
-# ------------------------
+
 if __name__ == "__main__":
+    print("🚀 Starting Coinbase producer...")
     t = threading.Thread(target=start_ws)
     t.start()
 
@@ -97,12 +80,12 @@ if __name__ == "__main__":
         while True:
             time.sleep(1)
             if time.time() - start_time > TIME_LIMIT:
-                print(f"⏰ Time limit reached ({TIME_LIMIT}s). Stopping WebSocket...")
+                print(f"⏰ Time limit reached ({TIME_LIMIT}s)")
                 ws.close()
                 break
     except KeyboardInterrupt:
-        print("Stopping WebSocket via Ctrl+C...")
+        print("Stopping via Ctrl+C...")
         ws.close()
 
     t.join()
-    print("✅ WebSocket stopped cleanly")
+    print("✅ Producer stopped")
