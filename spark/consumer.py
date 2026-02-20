@@ -1,15 +1,19 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    from_json, col, window, avg, max, min, sum, count, stddev,
-    current_timestamp, when, unix_timestamp, trim, upper
+    from_json, col, window, avg, max, min, sum, count,
+    current_timestamp, when, unix_timestamp,
+    trim, upper, date_format, concat_ws
 )
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+from pyspark.sql.types import (
+    StructType, StructField, StringType,
+    DoubleType, TimestampType
+)
 
 # =====================================================
 # SPARK SESSION
 # =====================================================
 spark = SparkSession.builder \
-    .appName("CryptoStream-RealTime-MultiWindow") \
+    .appName("CryptoStream-RealTime-Elastic") \
     .config("spark.sql.shuffle.partitions", "4") \
     .getOrCreate()
 
@@ -28,7 +32,7 @@ schema = StructType([
 ])
 
 # =====================================================
-# STEP 1: READ FROM KAFKA
+# READ FROM KAFKA
 # =====================================================
 raw_df = spark.readStream \
     .format("kafka") \
@@ -39,7 +43,7 @@ raw_df = spark.readStream \
     .load()
 
 # =====================================================
-# STEP 2: PARSE JSON
+# PARSE JSON
 # =====================================================
 parsed_df = raw_df.selectExpr("CAST(value AS STRING) AS json_string") \
     .select(from_json(col("json_string"), schema).alias("data")) \
@@ -47,7 +51,7 @@ parsed_df = raw_df.selectExpr("CAST(value AS STRING) AS json_string") \
     .withColumn("ingestion_time", current_timestamp())
 
 # =====================================================
-# STEP 3: CLEANING & VALIDATION
+# CLEANING
 # =====================================================
 cleaned_df = parsed_df \
     .filter(col("product_id").isNotNull()) \
@@ -63,12 +67,12 @@ cleaned_df = parsed_df \
     .withColumn("product_id", upper(trim(col("product_id"))))
 
 # =====================================================
-# STEP 4: DEDUPLICATION
+# DEDUPLICATION
 # =====================================================
 dedup_df = cleaned_df.dropDuplicates(["product_id", "event_time", "price"])
 
 # =====================================================
-# STEP 5: ENRICHMENT
+# ENRICHMENT
 # =====================================================
 enriched_df = dedup_df \
     .withColumn("spread", col("ask") - col("bid")) \
@@ -83,93 +87,97 @@ enriched_df = dedup_df \
     .withColumn("is_suspicious_spread", col("spread_pct") > 10)
 
 # =====================================================
-# STEP 6: FINAL BASE STREAM
+# FINAL STREAM
 # =====================================================
 final_df = enriched_df \
     .filter(col("quality_score") >= 50) \
     .filter(col("is_suspicious_spread") == False)
 
-# =====================================================
-# STEP 7: BASE STREAM WITH WATERMARK
-# =====================================================
-# Watermark ensures late data is handled but state doesn't grow indefinitely
 base_stream = final_df.withWatermark("event_time", "5 minutes")
 
 # =====================================================
-# 1-MINUTE WINDOW AGGREGATION (LIVE)
+# WRITE TO ELASTICSEARCH
 # =====================================================
-agg_1m = base_stream.groupBy(
-    col("product_id"),
-    window(col("event_time"), "1 minute")
-).agg(
-    avg("price").alias("avg_price"),
-    min("price").alias("min_price"),
-    max("price").alias("max_price"),
-    count("*").alias("tick_count"),
-    sum("volume_24h").alias("total_volume")
+def write_to_es(batch_df, batch_id, index_name):
+    batch_df.write \
+        .format("org.elasticsearch.spark.sql") \
+        .option("es.nodes", "elasticsearch") \
+        .option("es.port", "9200") \
+        .option("es.nodes.wan.only", "true") \
+        .option("es.mapping.id", "doc_id") \
+        .mode("append") \
+        .save(index_name)
+
+# =====================================================
+# WINDOW AGG FUNCTION
+# =====================================================
+def create_window_agg(stream_df, window_duration, index_name, checkpoint_dir, trigger_sec):
+
+    agg_df = stream_df.groupBy(
+        col("product_id"),
+        window(col("event_time"), window_duration)
+    ).agg(
+        avg("price").alias("avg_price"),
+        min("price").alias("min_price"),
+        max("price").alias("max_price"),
+        count("*").alias("tick_count"),
+        sum("volume_24h").alias("total_volume")
+    )
+
+    # Convert timestamps to ISO format (critical for ES date detection)
+    agg_df_es = agg_df \
+        .withColumn(
+            "window_start_ts",
+            date_format(col("window.start"), "yyyy-MM-dd'T'HH:mm:ss")
+        ) \
+        .withColumn(
+            "window_end_ts",
+            date_format(col("window.end"), "yyyy-MM-dd'T'HH:mm:ss")
+        ) \
+        .drop("window")
+
+    # Unique document id (prevents overwriting)
+    agg_df_es = agg_df_es.withColumn(
+        "doc_id",
+        concat_ws("_", col("product_id"), col("window_start_ts"))
+    )
+
+    query = agg_df_es.writeStream \
+        .foreachBatch(lambda df, batch_id: write_to_es(df, batch_id, index_name)) \
+        .outputMode("update") \
+        .option("checkpointLocation", checkpoint_dir) \
+        .trigger(processingTime=trigger_sec) \
+        .start()
+
+    return query
+
+# =====================================================
+# START STREAMS
+# =====================================================
+query_1m = create_window_agg(
+    base_stream, "1 minute",
+    "crypto_agg_1m",
+    "/tmp/checkpoint/agg_1m",
+    "2 seconds"
 )
 
-query_1m = agg_1m.writeStream \
-    .outputMode("update") \
-    .format("console") \
-    .option("truncate", False) \
-    .option("checkpointLocation", "/tmp/checkpoint/agg_1m") \
-    .trigger(processingTime="2 seconds") \
-    .queryName("agg_1m") \
-    .start()
-
-# =====================================================
-# 5-MINUTE WINDOW AGGREGATION (LIVE TREND)
-# =====================================================
-agg_5m = base_stream.groupBy(
-    col("product_id"),
-    window(col("event_time"), "5 minutes")
-).agg(
-    avg("price").alias("avg_price"),
-    min("price").alias("min_price"),
-    max("price").alias("max_price"),
-    count("*").alias("tick_count"),
-    sum("volume_24h").alias("total_volume")
+query_5m = create_window_agg(
+    base_stream, "5 minutes",
+    "crypto_agg_5m",
+    "/tmp/checkpoint/agg_5m",
+    "5 seconds"
 )
 
-query_5m = agg_5m.writeStream \
-    .outputMode("update") \
-    .format("console") \
-    .option("truncate", False) \
-    .option("checkpointLocation", "/tmp/checkpoint/agg_5m") \
-    .trigger(processingTime="5 seconds") \
-    .queryName("agg_5m") \
-    .start()
-
-# =====================================================
-# 15-MINUTE WINDOW AGGREGATION (LIVE INTERMEDIATE)
-# =====================================================
-agg_15m = base_stream.groupBy(
-    col("product_id"),
-    window(col("event_time"), "15 minutes")
-).agg(
-    avg("price").alias("avg_price"),
-    min("price").alias("min_price"),
-    max("price").alias("max_price"),
-    count("*").alias("tick_count"),
-    sum("volume_24h").alias("total_volume")
+query_15m = create_window_agg(
+    base_stream, "15 minutes",
+    "crypto_agg_15m",
+    "/tmp/checkpoint/agg_15m",
+    "10 seconds"
 )
 
-query_15m = agg_15m.writeStream \
-    .outputMode("update") \
-    .format("console") \
-    .option("truncate", False) \
-    .option("checkpointLocation", "/tmp/checkpoint/agg_15m") \
-    .trigger(processingTime="10 seconds") \
-    .queryName("agg_15m") \
-    .start()
-
-# =====================================================
-# STREAMING PIPELINE ACTIVE
-# =====================================================
-print("\n🚀 Crypto Streaming Pipeline Started")
-print("   • 1m → live updates every 2s")
-print("   • 5m → rolling trend every 5s")
-print("   • 15m → intermediate live values every 10s\n")
+print("\n Crypto Streaming Pipeline Started → Elasticsearch")
+print("   • 1m → index: crypto_agg_1m")
+print("   • 5m → index: crypto_agg_5m")
+print("   • 15m → index: crypto_agg_15m\n")
 
 spark.streams.awaitAnyTermination()
