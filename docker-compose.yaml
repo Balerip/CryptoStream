@@ -1,41 +1,164 @@
+version: '3.8'
+
 services:
+  # ==========================================================================
+  # KAFKA - Message Broker (KRaft Mode - No Zookeeper)
+  # ==========================================================================
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     ports:
-      - "9092:9092"
+      - "9092:9092"      # Kafka broker port
     environment:
+      # ========== BASIC KRAFT CONFIGURATION ==========
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      
+      # ========== LISTENERS ==========
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      
+      # ========== CLUSTER SETTINGS ==========
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      
+      # ========== TOPIC CONFIGURATION ==========
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_NUM_PARTITIONS: 3                    # Default 3 partitions for auto-created topics
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      
+      # ========== RETENTION SETTINGS ==========
+      KAFKA_LOG_RETENTION_HOURS: 1               # Keep messages for 1 hour
+      KAFKA_LOG_RETENTION_BYTES: 1073741824      # Max 1GB per partition
+      KAFKA_LOG_SEGMENT_BYTES: 536870912         # 512MB segments
+      
+      # ========== IDEMPOTENCE & EXACTLY-ONCE SUPPORT ==========
+      KAFKA_ENABLE_IDEMPOTENCE: 'true'
+      KAFKA_MIN_INSYNC_REPLICAS: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_TRANSACTION_MAX_TIMEOUT_MS: '900000' # 15 minutes
+      
+      # ========== PERFORMANCE TUNING ==========
+      KAFKA_COMPRESSION_TYPE: 'snappy'           # Compress messages
+      KAFKA_NUM_NETWORK_THREADS: 3
+      KAFKA_NUM_IO_THREADS: 8
+      KAFKA_SOCKET_SEND_BUFFER_BYTES: 102400
+      KAFKA_SOCKET_RECEIVE_BUFFER_BYTES: 102400
+      KAFKA_SOCKET_REQUEST_MAX_BYTES: 104857600
+      
+      # ========== LOGGING ==========
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+      
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    
     healthcheck:
       test: kafka-topics --bootstrap-server localhost:9092 --list || exit 1
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
+    
+    networks:
+      - crypto-network
 
-  producer:
-    build: ./producer
-    depends_on:
-      kafka:
-        condition: service_healthy
-
-  spark:
-    build: ./spark
-    depends_on:
-      kafka:
-        condition: service_healthy
+  # ==========================================================================
+  # KAFKA UI - Web Interface for Kafka Management
+  # ==========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
     ports:
-      - "4040:4040"  # Spark UI
+      - "8080:8080"      # Access at http://localhost:8080
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    
+    depends_on:
+      kafka:
+        condition: service_healthy
+    
+    networks:
+      - crypto-network
 
+  # ==========================================================================
+  # PRODUCER - Coinbase WebSocket to Kafka
+  # ==========================================================================
+  producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    
+    container_name: crypto-producer
+    
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: crypto_ticks
+      PRODUCER_RUNTIME_SECONDS: 300          # Run for 5 minutes
+    
+    depends_on:
+      kafka:
+        condition: service_healthy
+    
+    restart: on-failure
+    
+    networks:
+      - crypto-network
+
+  # ==========================================================================
+  # SPARK - Stream Processing Consumer
+  # ==========================================================================
+  spark:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    
+    container_name: crypto-spark
+    
+    ports:
+      - "4040:4040"      # Spark UI - http://localhost:4040
+      - "18080:18080"    # Spark History Server
+    
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark
+      SPARK_MASTER_PORT: 7077
+      SPARK_DRIVER_MEMORY: 2g
+      SPARK_EXECUTOR_MEMORY: 2g
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    
+    depends_on:
+      kafka:
+        condition: service_healthy
+    
+    restart: on-failure
+    
+    volumes:
+      - spark_checkpoints:/tmp/checkpoint
+    
+    networks:
+      - crypto-network
+
+# ==============================================================================
+# NETWORKS
+# ==============================================================================
+networks:
+  crypto-network:
+    driver: bridge
+
+# ==============================================================================
+# VOLUMES
+# ==============================================================================
 volumes:
   kafka_data:
+    driver: local
+  
+  spark_checkpoints:
+    driver: local
