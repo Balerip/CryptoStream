@@ -56,10 +56,10 @@ services:
       - KAFKA_BOOTSTRAP=kafka:9092
     depends_on:
       kafka:
-        condition: service_healthy   # wait for Kafka to be ready before connecting
+        condition: service_healthy
     networks:
       - spark-kafka-net
-    restart: on-failure              # auto-restart if WebSocket crashes
+    restart: on-failure
 
   # ── Spark — built from spark/Dockerfile ──────────────────────────────────
   spark:
@@ -92,6 +92,11 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      # ── CORS — allows the React dashboard on localhost:5173 to query ES ──
+      - http.cors.enabled=true
+      - http.cors.allow-origin=http://localhost:5173
+      - http.cors.allow-headers=Content-Type,Authorization,X-Requested-With
+      - http.cors.allow-methods=GET,POST,OPTIONS
     ports:
       - "9200:9200"
     volumes:
