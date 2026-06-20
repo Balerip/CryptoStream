@@ -23,7 +23,6 @@ export default function App() {
   const prevPriceRef      = useRef(null)
   const chartInitialized  = useRef(false)
 
-  // ── Init chart using ResizeObserver (waits for real dimensions) ────────────
   useEffect(() => {
     const container = chartContainerRef.current
     if (!container) return
@@ -67,7 +66,6 @@ export default function App() {
       candleRef.current = candle
     }
 
-    // Use ResizeObserver so we wait until the container has real pixel dimensions
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect
@@ -92,7 +90,6 @@ export default function App() {
     }
   }, [])
 
-  // ── Fetch data from Elasticsearch ─────────────────────────────────────────
   const fetchData = async () => {
     try {
       const res = await fetch(`${ES_URL}/${index}/_search`, {
@@ -154,17 +151,19 @@ export default function App() {
       setLastUpdate('Updated ' + new Date().toLocaleTimeString())
       setConnected(true)
 
-    } catch (e) {
+    } catch (_e) {                                          {/* ← renamed e to _e */}
       setLastUpdate('ES not reachable')
       setConnected(false)
     }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     candleRef.current?.setData([])
     fetchData()
   }, [symbol, index])
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const id = setInterval(fetchData, 3000)
     return () => clearInterval(id)
@@ -233,17 +232,11 @@ export default function App() {
 
       {/* Main grid */}
       <div style={styles.main}>
-
-        {/* Chart */}
         <div ref={chartContainerRef} style={styles.chartPanel} />
-
-        {/* Live ticks */}
         <div style={styles.ticksPanel}>
           <div style={styles.panelTitle}>Live Ticks</div>
           <TicksPanel ticks={ticks} />
         </div>
-
-        {/* Bottom metrics */}
         <div style={styles.metricsRow}>
           {[
             { label: 'Avg Price',    value: stats ? '$' + fmt(stats.avg)          : '—' },
@@ -259,7 +252,6 @@ export default function App() {
             </div>
           ))}
         </div>
-
       </div>
     </div>
   )

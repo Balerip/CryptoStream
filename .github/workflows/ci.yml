@@ -44,7 +44,7 @@ jobs:
       - name: Run tests inside container
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}/spark/tests:/opt/spark-apps/tests \
+            -v ${{ github.workspace }}/tests:/opt/spark-apps/tests \
             crypto-spark:ci \
             bash -c "
               pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
@@ -60,7 +60,7 @@ jobs:
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/output \
-            -v ${{ github.workspace }}/spark/tests:/opt/spark-apps/tests \
+            -v ${{ github.workspace }}/tests:/opt/spark-apps/tests \
             crypto-spark:ci \
             bash -c "
               pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
