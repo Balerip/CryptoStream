@@ -1,0 +1,115 @@
+name: CI — Lint + Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1: Lint ───────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linting tools
+        run: pip install flake8 black
+
+      - name: Run flake8
+        run: |
+          flake8 spark/consumer.py producer/producer.py \
+            --max-line-length=100 \
+            --ignore=E302,E305,E241,E221,E712,W292,E501,W503,W504
+
+      - name: Run black
+        run: black --check --line-length 100 spark/consumer.py producer/producer.py
+
+  # ── Job 2: Spark unit tests ───────────────────────────────────────────────
+  test:
+    name: Spark Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build spark image
+        run: docker build -t crypto-spark:ci ./spark
+
+      - name: Run tests inside container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/spark/tests:/opt/spark-apps/tests \
+            crypto-spark:ci \
+            bash -c "
+              pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
+              cd /opt/spark-apps &&
+              pytest tests/ \
+                --cov=. \
+                --cov-report=xml \
+                --cov-report=term-missing \
+                -v
+            "
+
+      - name: Copy coverage report
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/output \
+            -v ${{ github.workspace }}/spark/tests:/opt/spark-apps/tests \
+            crypto-spark:ci \
+            bash -c "
+              pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
+              cd /opt/spark-apps &&
+              pytest tests/ --cov=. --cov-report=xml --quiet &&
+              cp coverage.xml /output/coverage.xml
+            "
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ── Job 3: Dashboard (Vite/React) ─────────────────────────────────────────
+  dashboard:
+    name: Dashboard Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: dashboard
+
+      - name: Lint with ESLint
+        run: npm run lint
+        working-directory: dashboard
+
+      - name: Build Vite app
+        run: npm run build
+        working-directory: dashboard
+
+  # ── Job 4: Docker build check ─────────────────────────────────────────────
+  docker-build:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build producer image
+        run: docker build -t crypto-producer:test ./producer
+
+      - name: Build spark image
+        run: docker build -t crypto-spark:test ./spark

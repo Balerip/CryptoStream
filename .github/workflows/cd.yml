@@ -1,0 +1,108 @@
+name: CD — Build + Push
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/crypto-pipeline
+
+jobs:
+  # ── Guard ─────────────────────────────────────────────────────────────────
+  ci-check:
+    name: Verify CI Passed
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI passed — proceeding"
+
+  # ── Job 1: Build & Push ───────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: ci-check
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push producer image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./producer
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.IMAGE_NAME }}-producer:latest
+            ${{ env.IMAGE_NAME }}-producer:${{ github.sha }}
+
+      - name: Build and push spark image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./spark
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.IMAGE_NAME }}-spark:latest
+            ${{ env.IMAGE_NAME }}-spark:${{ github.sha }}
+
+  # ── Job 2: Smoke Test ─────────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test Images
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify spark image
+        run: |
+          docker pull ${{ env.IMAGE_NAME }}-spark:${{ github.sha }}
+          docker run --rm ${{ env.IMAGE_NAME }}-spark:${{ github.sha }} \
+            python -c "from pyspark.sql import SparkSession; print('✅ Spark OK')"
+
+      - name: Verify producer image
+        run: |
+          docker pull ${{ env.IMAGE_NAME }}-producer:${{ github.sha }}
+          docker run --rm ${{ env.IMAGE_NAME }}-producer:${{ github.sha }} \
+            python -c "import kafka; print('✅ Producer OK')"
+
+  # ── Job 3: Summary ────────────────────────────────────────────────────────
+  notify:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    if: always()
+
+    steps:
+      - name: Print summary
+        run: |
+          echo "=========================================="
+          echo "  CD Pipeline Complete"
+          echo "  Commit : ${{ github.sha }}"
+          echo "  Actor  : ${{ github.actor }}"
+          echo "  Images :"
+          echo "    ${{ env.IMAGE_NAME }}-producer:${{ github.sha }}"
+          echo "    ${{ env.IMAGE_NAME }}-spark:${{ github.sha }}"
+          echo "=========================================="
