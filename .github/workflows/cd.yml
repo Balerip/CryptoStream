@@ -79,14 +79,18 @@ jobs:
       - name: Verify spark image
         run: |
           docker pull ${{ env.IMAGE_NAME }}-spark:${{ github.sha }}
-          docker run --rm ${{ env.IMAGE_NAME }}-spark:${{ github.sha }} \
-            python -c "from pyspark.sql import SparkSession; print('✅ Spark OK')"
+          docker run --rm \
+            --entrypoint python3 \
+            ${{ env.IMAGE_NAME }}-spark:${{ github.sha }} \
+            -c "from pyspark.sql import SparkSession; print('✅ Spark OK')"
 
       - name: Verify producer image
         run: |
           docker pull ${{ env.IMAGE_NAME }}-producer:${{ github.sha }}
-          docker run --rm ${{ env.IMAGE_NAME }}-producer:${{ github.sha }} \
-            python -c "import kafka; print('✅ Producer OK')"
+          docker run --rm \
+            --entrypoint python3 \
+            ${{ env.IMAGE_NAME }}-producer:${{ github.sha }} \
+            -c "import kafka; print('✅ Producer OK')"
 
   # ── Job 3: Summary ────────────────────────────────────────────────────────
   notify:
