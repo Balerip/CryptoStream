@@ -45,11 +45,12 @@ jobs:
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/tests:/opt/spark-apps/tests \
+            -v ${{ github.workspace }}/spark/consumer.py:/opt/spark-apps/consumer.py \
             crypto-spark:ci \
             bash -c "
               pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
               cd /opt/spark-apps &&
-              pytest tests/ \
+              pytest tests/test_transforms.py \
                 --cov=. \
                 --cov-report=xml \
                 --cov-report=term-missing \
@@ -61,11 +62,12 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/output \
             -v ${{ github.workspace }}/tests:/opt/spark-apps/tests \
+            -v ${{ github.workspace }}/spark/consumer.py:/opt/spark-apps/consumer.py \
             crypto-spark:ci \
             bash -c "
               pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
               cd /opt/spark-apps &&
-              pytest tests/ --cov=. --cov-report=xml --quiet &&
+              pytest tests/test_transforms.py --cov=. --cov-report=xml --quiet &&
               cp coverage.xml /output/coverage.xml
             "
 

@@ -151,23 +151,21 @@ export default function App() {
       setLastUpdate('Updated ' + new Date().toLocaleTimeString())
       setConnected(true)
 
-    } catch (_e) {                                          {/* ← renamed e to _e */}
+    } catch {                                               // ← no variable at all
       setLastUpdate('ES not reachable')
       setConnected(false)
     }
   }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     candleRef.current?.setData([])
-    fetchData()
+    fetchData() // eslint-disable-line react-hooks/exhaustive-deps
   }, [symbol, index])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const id = setInterval(fetchData, 3000)
     return () => clearInterval(id)
-  }, [symbol, index])
+  }, [symbol, index]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const priceUp = stats ? stats.price >= (stats.prevPrice ?? stats.price) : true
 
