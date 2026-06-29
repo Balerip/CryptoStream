@@ -42,12 +42,15 @@ docker-compose up -d --build
 # Check logs
 docker-compose logs -f producer   # ticks flowing in
 docker-compose logs -f spark      # micro-batches processing
-Monitoring
+
+
+## Monitoring
 UI	URL
 Kafka UI	http://localhost:8080
 Spark UI	http://localhost:4040
 Kibana	http://localhost:5601
-Known Gaps
+
+### Known Gaps
 No Dead Letter Queue for malformed records
 No automated alerting
 Single Kafka broker — no replication
