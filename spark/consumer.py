@@ -50,17 +50,19 @@ S3_BASE = "s3a://crypto-data-pk/aggregates"  # s3a:// — required for Spark/Had
 # =====================================================
 # KAFKA SCHEMA
 # =====================================================
-schema = StructType([
-    StructField("product_id",  StringType()),
-    StructField("price",       DoubleType()),
-    StructField("bid",         DoubleType()),
-    StructField("ask",         DoubleType()),
-    StructField("volume_24h",  DoubleType()),
-    StructField("open_24h",    DoubleType()),   # ← add
-    StructField("high_24h",    DoubleType()),   # ← add
-    StructField("low_24h",     DoubleType()),   # ← add
-    StructField("event_time",  TimestampType()),
-])
+schema = StructType(
+    [
+        StructField("product_id", StringType()),
+        StructField("price", DoubleType()),
+        StructField("bid", DoubleType()),
+        StructField("ask", DoubleType()),
+        StructField("volume_24h", DoubleType()),
+        StructField("open_24h", DoubleType()),  # ← add
+        StructField("high_24h", DoubleType()),  # ← add
+        StructField("low_24h", DoubleType()),  # ← add
+        StructField("event_time", TimestampType()),
+    ]
+)
 
 # =====================================================
 # READ FROM KAFKA
@@ -104,9 +106,9 @@ cleaned_df = (
 # =====================================================
 # DEDUPLICATION
 # =====================================================
-dedup_df = cleaned_df \
-    .withWatermark("event_time", "1 minutes") \
-    .dropDuplicates(["product_id", "event_time", "price"])
+dedup_df = cleaned_df.withWatermark("event_time", "1 minutes").dropDuplicates(
+    ["product_id", "event_time", "price"]
+)
 
 # =====================================================
 # ENRICHMENT
@@ -121,7 +123,8 @@ enriched_df = (
         when((col("latency_seconds") < 5) & (col("spread_pct") < 1), 100)
         .when((col("latency_seconds") < 10) & (col("spread_pct") < 5), 80)
         .when((col("latency_seconds") < 30) & (col("spread_pct") < 10), 50)
-        .otherwise(0))
+        .otherwise(0),
+    )
     .withColumn("is_suspicious_spread", col("spread_pct") > 10)
 )
 
@@ -168,8 +171,7 @@ def write_to_es(batch_df, batch_id, index_name):
 #     _delta_log/                       ← transaction log (ACID guarantee)
 def write_to_s3(batch_df, batch_id, window_label):
     (
-      batch_df
-        .write.format("delta")
+        batch_df.write.format("delta")
         .mode("append")
         .partitionBy("year", "month", "day")
         .save(f"{S3_BASE}/window={window_label}/")
@@ -199,15 +201,16 @@ def create_window_agg(
     )
 
     agg_df_es = (
-    agg_df
-    .withColumn("window_start_ts", date_format(col("window.start"), "yyyy-MM-dd'T'HH:mm:ss"))
-    .withColumn("window_end_ts",   date_format(col("window.end"),   "yyyy-MM-dd'T'HH:mm:ss"))
-    .withColumn("year",  year(col("window.start")))
-    .withColumn("month", month(col("window.start")))
-    .withColumn("day",   dayofmonth(col("window.start")))
-    .drop("window")
-    .withColumn("doc_id", concat_ws("_", col("product_id"), col("window_start_ts")))
-)
+        agg_df.withColumn(
+            "window_start_ts", date_format(col("window.start"), "yyyy-MM-dd'T'HH:mm:ss")
+        )
+        .withColumn("window_end_ts", date_format(col("window.end"), "yyyy-MM-dd'T'HH:mm:ss"))
+        .withColumn("year", year(col("window.start")))
+        .withColumn("month", month(col("window.start")))
+        .withColumn("day", dayofmonth(col("window.start")))
+        .drop("window")
+        .withColumn("doc_id", concat_ws("_", col("product_id"), col("window_start_ts")))
+    )
 
     # ── Single query, dual sink ──────────────────────────────────────────
     # Write to both ES and S3 in one foreachBatch — halves query count
