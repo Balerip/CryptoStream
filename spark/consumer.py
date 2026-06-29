@@ -27,6 +27,11 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, T
 spark = (
     SparkSession.builder.appName("CryptoStream-RealTime-Elastic")
     .config("spark.sql.shuffle.partitions", "2")
+    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    .config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    )
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .config(
         "spark.hadoop.fs.s3a.aws.credentials.provider",
@@ -45,16 +50,17 @@ S3_BASE = "s3a://crypto-data-pk/aggregates"  # s3a:// — required for Spark/Had
 # =====================================================
 # KAFKA SCHEMA
 # =====================================================
-schema = StructType(
-    [
-        StructField("product_id", StringType()),
-        StructField("price", DoubleType()),
-        StructField("bid", DoubleType()),
-        StructField("ask", DoubleType()),
-        StructField("volume_24h", DoubleType()),
-        StructField("event_time", TimestampType()),
-    ]
-)
+schema = StructType([
+    StructField("product_id",  StringType()),
+    StructField("price",       DoubleType()),
+    StructField("bid",         DoubleType()),
+    StructField("ask",         DoubleType()),
+    StructField("volume_24h",  DoubleType()),
+    StructField("open_24h",    DoubleType()),   # ← add
+    StructField("high_24h",    DoubleType()),   # ← add
+    StructField("low_24h",     DoubleType()),   # ← add
+    StructField("event_time",  TimestampType()),
+])
 
 # =====================================================
 # READ FROM KAFKA
@@ -98,7 +104,9 @@ cleaned_df = (
 # =====================================================
 # DEDUPLICATION
 # =====================================================
-dedup_df = cleaned_df.dropDuplicates(["product_id", "event_time", "price"])
+dedup_df = cleaned_df \
+    .withWatermark("event_time", "1 minutes") \
+    .dropDuplicates(["product_id", "event_time", "price"])
 
 # =====================================================
 # ENRICHMENT
@@ -112,8 +120,8 @@ enriched_df = (
         "quality_score",
         when((col("latency_seconds") < 5) & (col("spread_pct") < 1), 100)
         .when((col("latency_seconds") < 10) & (col("spread_pct") < 5), 80)
-        .otherwise(50),
-    )
+        .when((col("latency_seconds") < 30) & (col("spread_pct") < 10), 50)
+        .otherwise(0))
     .withColumn("is_suspicious_spread", col("spread_pct") > 10)
 )
 
@@ -143,35 +151,28 @@ def write_to_es(batch_df, batch_id, index_name):
 # =====================================================
 # WRITE TO S3 (Parquet, Hive-partitioned by date)
 # =====================================================
+# WRITE TO S3 — Delta instead of Parquet
+#
+# Key changes from original:
+# 1. format("delta") replaces .parquet()
+# 2. Removed coalesce(1) — Delta manages file compaction
+#    via OPTIMIZE command; coalesce hurts parallelism
+# 3. Removed isEmpty() check — Delta handles empty
+#    micro-batches as no-ops internally, no extra Spark job
+# 4. replaceWhere used during backfill (see backfill.py);
+#    normal streaming runs use append
+#
+# Partition layout on S3:
+#   s3://crypto-data-pk/aggregates/window=1m/year=2026/month=06/day=27/
+#     part-00000-<uuid>.snappy.parquet  ← Delta still uses parquet files
+#     _delta_log/                       ← transaction log (ACID guarantee)
 def write_to_s3(batch_df, batch_id, window_label):
-    """
-    Writes a micro-batch to S3 as Parquet, partitioned by year/month/day.
-
-    Partition layout on S3:
-        s3://crypto-data/aggregates/window=1m/year=2026/month=03/day=20/
-            part-00000-....parquet
-
-    Notes:
-    - partitionBy() controls the folder structure; the partition columns
-      are NOT written inside the Parquet file (Spark infers them from path).
-    - mode("append") is safe here: each micro-batch writes new files;
-      it never reads or rewrites existing Parquet files in the same partition.
-    - coalesce(1) reduces the number of small files per partition.
-      For higher-throughput scenarios, remove it and let Spark decide.
-    """
-    if batch_df.rdd.isEmpty():
-        return  # skip empty micro-batches (e.g. during low-volume periods)
-
-    batch_df.withColumn("year", year(col("window_start_ts").cast("timestamp"))).withColumn(
-        "month", month(col("window_start_ts").cast("timestamp"))
-    ).withColumn("day", dayofmonth(col("window_start_ts").cast("timestamp"))).coalesce(
-        1
-    ).write.mode(
-        "append"
-    ).partitionBy(
-        "year", "month", "day"
-    ).parquet(
-        f"{S3_BASE}/window={window_label}/"
+    (
+      batch_df
+        .write.format("delta")
+        .mode("append")
+        .partitionBy("year", "month", "day")
+        .save(f"{S3_BASE}/window={window_label}/")
     )
 
 
@@ -198,13 +199,15 @@ def create_window_agg(
     )
 
     agg_df_es = (
-        agg_df.withColumn(
-            "window_start_ts", date_format(col("window.start"), "yyyy-MM-dd'T'HH:mm:ss")
-        )
-        .withColumn("window_end_ts", date_format(col("window.end"), "yyyy-MM-dd'T'HH:mm:ss"))
-        .drop("window")
-        .withColumn("doc_id", concat_ws("_", col("product_id"), col("window_start_ts")))
-    )
+    agg_df
+    .withColumn("window_start_ts", date_format(col("window.start"), "yyyy-MM-dd'T'HH:mm:ss"))
+    .withColumn("window_end_ts",   date_format(col("window.end"),   "yyyy-MM-dd'T'HH:mm:ss"))
+    .withColumn("year",  year(col("window.start")))
+    .withColumn("month", month(col("window.start")))
+    .withColumn("day",   dayofmonth(col("window.start")))
+    .drop("window")
+    .withColumn("doc_id", concat_ws("_", col("product_id"), col("window_start_ts")))
+)
 
     # ── Single query, dual sink ──────────────────────────────────────────
     # Write to both ES and S3 in one foreachBatch — halves query count

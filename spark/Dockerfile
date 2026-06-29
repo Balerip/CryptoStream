@@ -18,5 +18,5 @@ CMD ["/opt/spark/bin/spark-submit", \
      "--executor-memory", "512m", \
      "--conf", "spark.sql.shuffle.partitions=2", \
      "--packages", \
-     "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.2,org.elasticsearch:elasticsearch-spark-30_2.12:8.11.0", \
+     "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.2,org.elasticsearch:elasticsearch-spark-30_2.12:8.11.0,io.delta:delta-core_2.12:2.4.0", \
      "/opt/spark-apps/consumer.py"]

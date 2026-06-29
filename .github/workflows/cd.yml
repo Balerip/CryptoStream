@@ -1,7 +1,9 @@
 name: CD — Build + Push
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI — Lint + Test"]
+    types: [completed]
     branches: [main]
 
 env:
@@ -14,7 +16,11 @@ jobs:
     name: Verify CI Passed
     runs-on: ubuntu-latest
     steps:
-      - run: echo "CI passed — proceeding"
+      - name: Fail if CI did not pass
+        if: ${{ github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "CI workflow did not pass (conclusion: ${{ github.event.workflow_run.conclusion }}). Aborting CD."
+          exit 1
 
   # ── Job 1: Build & Push ───────────────────────────────────────────────────
   build-and-push:

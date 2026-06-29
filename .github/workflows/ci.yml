@@ -41,9 +41,9 @@ jobs:
       - name: Build spark image
         run: docker build -t crypto-spark:ci ./spark
 
-      - name: Run tests inside container
+      - name: Run tests and capture coverage
         run: |
-          docker run --rm \
+          docker run --name spark-test \
             -v ${{ github.workspace }}/tests:/opt/spark-apps/tests \
             -v ${{ github.workspace }}/spark/consumer.py:/opt/spark-apps/consumer.py \
             crypto-spark:ci \
@@ -58,18 +58,11 @@ jobs:
             "
 
       - name: Copy coverage report
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/output \
-            -v ${{ github.workspace }}/tests:/opt/spark-apps/tests \
-            -v ${{ github.workspace }}/spark/consumer.py:/opt/spark-apps/consumer.py \
-            crypto-spark:ci \
-            bash -c "
-              pip install pyspark==3.4.2 pytest pytest-cov --quiet &&
-              cd /opt/spark-apps &&
-              pytest tests/test_transforms.py --cov=. --cov-report=xml --quiet &&
-              cp coverage.xml /output/coverage.xml
-            "
+        run: docker cp spark-test:/opt/spark-apps/coverage.xml ./coverage.xml
+
+      - name: Remove test container
+        if: always()
+        run: docker rm spark-test
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
